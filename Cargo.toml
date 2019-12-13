@@ -24,8 +24,10 @@ name = "glib"
 lazy_static = "1.2"
 libc = "0.2"
 bitflags = "1.0"
-gobject-sys = "0.9.0"
-glib-sys = "0.9.0"
+# gobject-sys = "0.9.0"
+gobject-sys = { git = "https://github.com/cthorner/sys", version = "0.9.0" }
+# glib-sys = "0.9.0"
+glib-sys = { git = "https://github.com/cthorner/sys" }
 futures-preview = { version = "0.3.0-alpha", optional = true }
 
 [dev-dependencies]
