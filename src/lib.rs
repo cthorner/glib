@@ -77,16 +77,19 @@
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::unreadable_literal)]
 
+#[doc(hidden)]
 #[macro_use]
-extern crate bitflags;
-#[macro_use]
-extern crate lazy_static;
+pub extern crate bitflags;
 extern crate libc;
+extern crate once_cell;
 
 #[doc(hidden)]
 pub extern crate glib_sys;
 #[doc(hidden)]
 pub extern crate gobject_sys;
+
+extern crate glib_macros;
+pub use glib_macros::{gflags, GBoxed, GEnum};
 
 extern crate futures_channel;
 extern crate futures_core;
@@ -114,7 +117,9 @@ pub use enums::{EnumClass, EnumValue, FlagsBuilder, FlagsClass, FlagsValue, User
 pub use time_val::{get_current_time, TimeVal};
 pub use types::{StaticType, Type};
 pub use value::{SendValue, ToSendValue, ToValue, TypedValue, Value};
-pub use variant::{StaticVariantType, ToVariant, Variant};
+pub use variant::{FromVariant, StaticVariantType, ToVariant, Variant};
+pub use variant_dict::VariantDict;
+pub use variant_iter::VariantIter;
 pub use variant_type::{VariantTy, VariantType};
 
 #[macro_use]
@@ -150,6 +155,8 @@ mod checksum;
 pub mod closure;
 mod enums;
 mod file_error;
+mod functions;
+pub use functions::*;
 mod key_file;
 pub mod prelude;
 pub mod signal;
@@ -167,6 +174,8 @@ mod main_context;
 mod main_context_channel;
 pub mod value;
 pub mod variant;
+mod variant_dict;
+mod variant_iter;
 mod variant_type;
 pub use main_context_channel::{Receiver, Sender, SyncSender};
 mod date;
@@ -174,9 +183,27 @@ pub use date::Date;
 mod value_array;
 pub use value_array::ValueArray;
 mod param_spec;
-pub use param_spec::ParamSpec;
+pub use param_spec::*;
 mod quark;
 pub use quark::Quark;
+#[macro_use]
+mod log;
+#[cfg(any(feature = "v2_46", feature = "dox"))]
+pub use log::log_set_handler;
+
+// #[cfg(any(feature = "v2_50", feature = "dox"))]
+// pub use log::log_variant;
+pub use log::{
+    log_default_handler, log_remove_handler, log_set_always_fatal, log_set_default_handler,
+    log_set_fatal_mask, log_unset_default_handler, set_print_handler, set_printerr_handler,
+    unset_print_handler, unset_printerr_handler, LogHandlerId, LogLevel, LogLevels,
+};
+
+#[cfg(any(feature = "log", feature = "dox"))]
+#[macro_use]
+mod bridged_logging;
+#[cfg(any(feature = "log", feature = "dox"))]
+pub use bridged_logging::{GlibLogger, GlibLoggerDomain, GlibLoggerFormat};
 
 pub mod send_unique;
 pub use send_unique::{SendUnique, SendUniqueCell};
@@ -187,6 +214,14 @@ pub mod subclass;
 mod main_context_futures;
 mod source_futures;
 pub use source_futures::*;
+
+mod thread_pool;
+pub use thread_pool::ThreadPool;
+
+/// This is the log domain used by the [`clone!`][crate::clone] macro. If you want to use a custom
+/// logger (it prints to stdout by default), you can set your own logger using the corresponding
+/// `log` functions.
+pub const CLONE_MACRO_LOG_DOMAIN: &str = "glib-rs-clone";
 
 // Actual thread IDs can be reused by the OS once the old thread finished.
 // This works around it by using our own counter for threads.

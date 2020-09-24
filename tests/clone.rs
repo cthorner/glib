@@ -33,7 +33,8 @@ fn clone_and_references() {
         })
     };
 
-    assert_eq!(closure(), ());
+    closure();
+    assert_eq!(ref_state.borrow().started, true);
 }
 
 #[test]
@@ -68,7 +69,8 @@ fn renaming() {
         })
     };
 
-    assert_eq!(closure(), ());
+    closure();
+    assert_eq!(state.borrow().started, true);
 }
 
 #[test]
@@ -82,7 +84,7 @@ fn clone_closure() {
         })
     };
 
-    assert_eq!(closure(), ());
+    closure();
 
     assert_eq!(state.borrow().started, true);
     assert_eq!(state.borrow().count, 0);
@@ -98,7 +100,7 @@ fn clone_closure() {
         })
     };
 
-    assert_eq!(closure(), ());
+    closure();
 
     assert_eq!(state.borrow().count, 1);
     assert_eq!(state.borrow().started, true);
@@ -120,13 +122,13 @@ fn clone_default_value() {
 #[test]
 fn clone_panic() {
     let state = Arc::new(Mutex::new(State::new()));
-    state.lock().unwrap().count = 20;
+    state.lock().expect("Failed to lock state mutex").count = 20;
 
     let closure = {
         let state2 = Arc::new(Mutex::new(State::new()));
         clone!(@weak state2, @strong state => @default-return panic!(), move |_| {
-            state.lock().unwrap().count = 21;
-            state2.lock().unwrap().started = true;
+            state.lock().expect("Failed to lock state mutex").count = 21;
+            state2.lock().expect("Failed to lock state2 mutex").started = true;
             10
         })
     };
@@ -135,9 +137,36 @@ fn clone_panic() {
         closure(50);
     });
 
-    if result.is_ok() {
-        assert!(false, "should panic");
+    assert!(result.is_err());
+
+    assert_eq!(state.lock().expect("Failed to lock state mutex").count, 20);
+}
+
+#[test]
+fn clone_import_rename() {
+    import_rename::test();
+}
+
+mod import_rename {
+    use glib::clone as clone_g;
+
+    #[allow(unused_macros)]
+    macro_rules! clone {
+        ($($anything:tt)*) => {
+            |_, _| panic!("The clone! macro doesn't support renaming")
+        };
     }
 
-    assert_eq!(state.lock().unwrap().count, 20);
+    #[allow(unused_variables)]
+    pub fn test() {
+        let n = 2;
+
+        let closure: Box<dyn Fn(u32, u32)> = Box::new(clone_g!(
+            @strong n
+            => move |_, _|
+            println!("The clone! macro does support renaming")
+        ));
+
+        closure(0, 0);
+    }
 }

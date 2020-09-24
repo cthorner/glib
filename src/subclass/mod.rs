@@ -16,24 +16,85 @@
 //! use glib::subclass;
 //! use glib::subclass::prelude::*;
 //!
-//! use std::cell::RefCell;
+//! use std::cell::{Cell, RefCell};
+//!
+//! #[derive(Debug, Eq, PartialEq, Clone, Copy, GEnum)]
+//! #[repr(u32)]
+//! // type_name: GType name of the GEnum (mandatory)
+//! #[genum(type_name = "SimpleObjectAnimal")]
+//! enum Animal {
+//!   Goat = 0,
+//!   #[genum(name = "The Dog")]
+//!   Dog = 1,
+//!   // name: the name of the GEnumValue (optional, default to the enum name in CamelCase
+//!   // nick: the nick of the GEnumValue (optional, default to the enum name in kebab-case
+//!   #[genum(name = "The Cat", nick = "chat")]
+//!   Cat = 2,
+//! }
+//!
+//! impl Default for Animal {
+//!     fn default() -> Self {
+//!         Animal::Goat
+//!     }
+//! }
+//!
+//! #[gflags("MyFlags")]
+//! enum MyFlags {
+//!     #[gflags(name = "Flag A", nick = "nick-a")]
+//!     A = 0b00000001,
+//!     #[gflags(name = "Flag B")]
+//!     B = 0b00000010,
+//!     #[gflags(skip)]
+//!     AB = Self::A.bits() | Self::B.bits(),
+//!     C = 0b00000100,
+//! }
+//!
+//! impl Default for MyFlags {
+//!     fn default() -> Self {
+//!         MyFlags::A
+//!     }
+//! }
 //!
 //! // Static array for defining the properties of the new type.
-//! static PROPERTIES: [subclass::Property; 1] = [subclass::Property("name", |name| {
-//!     glib::ParamSpec::string(
-//!         name,
-//!         "Name",
-//!         "Name of this object",
-//!         None,
-//!         glib::ParamFlags::READWRITE,
-//!     )
-//! })];
+//! static PROPERTIES: [subclass::Property; 3] = [
+//!     subclass::Property("name", |name| {
+//!         glib::ParamSpec::string(
+//!             name,
+//!             "Name",
+//!             "Name of this object",
+//!             None,
+//!             glib::ParamFlags::READWRITE,
+//!         )
+//!     }),
+//!     subclass::Property("animal", |name| {
+//!         glib::ParamSpec::enum_(
+//!             name,
+//!             "Animal",
+//!             "Animal",
+//!             Animal::static_type(),
+//!             Animal::default() as i32,
+//!             glib::ParamFlags::READWRITE,
+//!         )
+//!     }),
+//!     subclass::Property("flags", |name| {
+//!         glib::ParamSpec::flags(
+//!             name,
+//!             "Flags",
+//!             "Flags",
+//!             MyFlags::static_type(),
+//!             MyFlags::default().bits(),
+//!             glib::ParamFlags::READWRITE,
+//!         )
+//!     }),
+//! ];
 //!
 //! // This is the struct containing all state carried with
 //! // the new type. Generally this has to make use of
 //! // interior mutability.
 //! pub struct SimpleObject {
 //!     name: RefCell<Option<String>>,
+//!     animal: Cell<Animal>,
+//!     flags: Cell<MyFlags>,
 //! }
 //!
 //! // ObjectSubclass is the trait that defines the new type and
@@ -69,15 +130,14 @@
 //!     fn new() -> Self {
 //!         Self {
 //!             name: RefCell::new(None),
+//!             animal: Cell::new(Animal::default()),
+//!             flags: Cell::new(MyFlags::default()),
 //!         }
 //!     }
 //! }
 //!
 //! // Trait that is used to override virtual methods of glib::Object.
 //! impl ObjectImpl for SimpleObject {
-//!     // This macro defines some boilerplate.
-//!     glib_object_impl!();
-//!
 //!     // Called whenever a property is set on this instance. The id
 //!     // is the same as the index of the property in the PROPERTIES array.
 //!     fn set_property(&self, _obj: &glib::Object, id: usize, value: &glib::Value) {
@@ -89,7 +149,19 @@
 //!                     .get()
 //!                     .expect("type conformity checked by `Object::set_property`");
 //!                 self.name.replace(name);
-//!             }
+//!             },
+//!             subclass::Property("animal", ..) => {
+//!                 let animal = value
+//!                     .get()
+//!                     .expect("type conformity checked by `Object::set_property`");
+//!                 self.animal.replace(animal.unwrap());
+//!             },
+//!             subclass::Property("flags", ..) => {
+//!                 let flags = value
+//!                     .get()
+//!                     .expect("type conformity checked by `Object::set_property`");
+//!                 self.flags.replace(flags.unwrap());
+//!             },
 //!             _ => unimplemented!(),
 //!         }
 //!     }
@@ -101,6 +173,8 @@
 //!
 //!         match *prop {
 //!             subclass::Property("name", ..) => Ok(self.name.borrow().to_value()),
+//!             subclass::Property("animal", ..) => Ok(self.animal.get().to_value()),
+//!             subclass::Property("flags", ..) => Ok(self.flags.get().to_value()),
 //!             _ => unimplemented!(),
 //!         }
 //!     }
@@ -126,6 +200,14 @@
 //!         obj.get_property("name").unwrap().get::<&str>(),
 //!         Ok(Some("test"))
 //!     );
+//!
+//!     assert_eq!(obj.get_property("animal").unwrap().get::<Animal>(), Ok(Some(Animal::Goat)));
+//!     obj.set_property("animal", &Animal::Cat).unwrap();
+//!     assert_eq!(obj.get_property("animal").unwrap().get::<Animal>(), Ok(Some(Animal::Cat)));
+//!
+//!     assert_eq!(obj.get_property("flags").unwrap().get::<MyFlags>(), Ok(Some(MyFlags::A)));
+//!     obj.set_property("flags", &MyFlags::B).unwrap();
+//!     assert_eq!(obj.get_property("flags").unwrap().get::<MyFlags>(), Ok(Some(MyFlags::B)));
 //! }
 //! ```
 //!
@@ -141,21 +223,9 @@
 //! use glib::subclass;
 //! use glib::subclass::prelude::*;
 //!
-//! #[derive(Clone, Debug, PartialEq, Eq)]
+//! #[derive(Clone, Debug, PartialEq, Eq, GBoxed)]
+//! #[gboxed(type_name = "MyBoxed")]
 //! struct MyBoxed(String);
-//!
-//! impl BoxedType for MyBoxed {
-//!     // This type name must be unique per process.
-//!     const NAME: &'static str = "MyBoxed";
-//!
-//!     // This macro defines a
-//!     //   fn get_type() -> glib::Type
-//!     // function
-//!     glib_boxed_type!();
-//! }
-//!
-//! // This macro derives some traits on the struct
-//! glib_boxed_derive_traits!(MyBoxed);
 //!
 //! pub fn main() {
 //!     assert_ne!(glib::Type::Invalid, MyBoxed::get_type());

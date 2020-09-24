@@ -21,13 +21,31 @@
 //! ```
 //!
 //! `ToGlibPtr`, `FromGlibPtrNone`, `FromGlibPtrFull` and `FromGlibPtrBorrow` work on `gpointer`s
-//! and support different modes of ownership transfer.
+//! and ensure correct ownership of values
+//! according to [Glib ownership transfer rules](https://gi.readthedocs.io/en/latest/annotations/giannotations.html).
+//!
+//! `FromGlibPtrNone` and `FromGlibPtrFull`
+//! must be called on values obtained from C,
+//! according to their `transfer` annotations.
+//! They acquire non-gobject types,
+//! as well as turning floating references to strong ones,
+//! which are the only ones properly handled by the Rust bindings.
+//!
+//! For more information about floating references, please refer to the "Floating references" section
+//! of [the gobject reference](https://developer.gnome.org/gobject/stable/gobject-The-Base-Object-Type.html).
 //!
 //! ```ignore
 //!     fn get_title(&self) -> Option<String> {
 //!         unsafe {
 //!             let title = gtk_sys::gtk_window_get_title(self.pointer);
 //!             from_glib_none(title)
+//!         }
+//!     }
+//!     fn create_bool(value: gboolean) -> Variant {
+//!         unsafe {
+//!             let variant = glib_sys::g_variant_new_boolean(value);
+//!             // g_variant_new_boolean has `transfer none`
+//!             from_glib_none(variant)
 //!         }
 //!     }
 //! ```
@@ -119,6 +137,7 @@ pub fn const_override<T>(ptr: *mut T) -> *const T {
 /// A trait for creating an uninitialized value. Handy for receiving outparams.
 pub trait Uninitialized {
     /// Returns an uninitialized value.
+    #[allow(clippy::missing_safety_doc)]
     unsafe fn uninitialized() -> Self;
 }
 
@@ -127,34 +146,6 @@ pub trait Uninitialized {
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn uninitialized<T: Uninitialized>() -> T {
     T::uninitialized()
-}
-
-pub trait ToBool: Copy {
-    fn to_bool(self) -> bool;
-}
-
-impl ToBool for bool {
-    #[inline]
-    fn to_bool(self) -> bool {
-        self
-    }
-}
-
-impl ToBool for glib_sys::gboolean {
-    #[inline]
-    fn to_bool(self) -> bool {
-        self != glib_sys::GFALSE
-    }
-}
-
-/// Returns `Some(val)` if the condition is true and `None` otherwise.
-#[inline]
-pub fn some_if<B: ToBool, T, F: FnOnce() -> T>(cond: B, f: F) -> Option<T> {
-    if cond.to_bool() {
-        Some(f())
-    } else {
-        None
-    }
 }
 
 /// Helper type that stores temporary values used for translation.
@@ -193,6 +184,47 @@ pub struct Stash<'a, P: Copy, T: ?Sized + ToGlibPtr<'a, P>>(
 pub struct StashMut<'a, P: Copy, T: ?Sized>(pub P, pub <T as ToGlibPtrMut<'a, P>>::Storage)
 where
     T: ToGlibPtrMut<'a, P>;
+
+/// Wrapper around values representing borrowed C memory.
+///
+/// This is returned by `from_glib_borrow()` and ensures that the wrapped value
+/// is never dropped when going out of scope.
+///
+/// Borrowed values must never be passed by value or mutable reference to safe Rust code and must
+/// not leave the C scope in which they are valid.
+#[derive(Debug)]
+pub struct Borrowed<T>(mem::ManuallyDrop<T>);
+
+impl<T> Borrowed<T> {
+    /// Creates a new borrowed value.
+    pub fn new(val: T) -> Self {
+        Self(mem::ManuallyDrop::new(val))
+    }
+
+    /// Extracts the contained value.
+    ///
+    /// # Safety
+    ///
+    /// The returned value must never be dropped and instead has to be passed to `mem::forget()` or
+    /// be directly wrapped in `mem::ManuallyDrop` or another `Borrowed` wrapper.
+    pub unsafe fn into_inner(self) -> T {
+        mem::ManuallyDrop::into_inner(self.0)
+    }
+}
+
+impl<T> AsRef<T> for Borrowed<T> {
+    fn as_ref(&self) -> &T {
+        &*self.0
+    }
+}
+
+impl<T> std::ops::Deref for Borrowed<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &*self.0
+    }
+}
 
 /// Translate a simple type.
 pub trait ToGlib {
@@ -949,85 +981,85 @@ impl Drop for HashTable {
     }
 }
 
-impl<'a, T> ToGlibContainerFromSlice<'a, *const glib_sys::GArray> for &'a T
-where
-    T: GlibPtrDefault + ToGlibPtr<'a, <T as GlibPtrDefault>::GlibType>,
-{
-    type Storage = (
-        Option<Array>,
-        Vec<Stash<'a, <T as GlibPtrDefault>::GlibType, &'a T>>,
-    );
+pub struct PtrArray(*mut glib_sys::GPtrArray);
 
-    #[inline]
-    fn to_glib_none_from_slice(t: &'a [&'a T]) -> (*const glib_sys::GArray, Self::Storage) {
-        let (list, stash) =
-            ToGlibContainerFromSlice::<*mut glib_sys::GArray>::to_glib_none_from_slice(t);
-        (list as *const glib_sys::GArray, stash)
-    }
-
-    #[inline]
-    fn to_glib_container_from_slice(_t: &'a [&'a T]) -> (*const glib_sys::GArray, Self::Storage) {
-        unimplemented!()
-    }
-
-    #[inline]
-    fn to_glib_full_from_slice(_t: &[&'a T]) -> *const glib_sys::GArray {
-        unimplemented!()
-    }
-}
-
-pub struct Array(*mut glib_sys::GArray);
-
-impl Drop for Array {
+impl Drop for PtrArray {
     fn drop(&mut self) {
         unsafe {
-            glib_sys::g_array_free(self.0, false.to_glib());
+            glib_sys::g_ptr_array_unref(self.0);
         }
     }
 }
 
-impl<'a, T> ToGlibContainerFromSlice<'a, *mut glib_sys::GArray> for T
+impl<'a, T> ToGlibContainerFromSlice<'a, *mut glib_sys::GPtrArray> for T
 where
     T: GlibPtrDefault + ToGlibPtr<'a, <T as GlibPtrDefault>::GlibType>,
 {
     type Storage = (
-        Option<Array>,
+        Option<PtrArray>,
         Vec<Stash<'a, <T as GlibPtrDefault>::GlibType, T>>,
     );
 
     #[inline]
-    fn to_glib_none_from_slice(t: &'a [T]) -> (*mut glib_sys::GArray, Self::Storage) {
+    fn to_glib_none_from_slice(t: &'a [T]) -> (*mut glib_sys::GPtrArray, Self::Storage) {
         let stash_vec: Vec<_> = t.iter().map(ToGlibPtr::to_glib_none).collect();
-        let mut arr: *mut glib_sys::GArray = ptr::null_mut();
+        let arr = unsafe { glib_sys::g_ptr_array_sized_new(t.len() as _) };
         unsafe {
             for stash in &stash_vec {
-                arr = glib_sys::g_array_append_vals(arr, Ptr::to(stash.0), 1);
+                glib_sys::g_ptr_array_add(arr, Ptr::to(stash.0));
             }
         }
-        (arr, (Some(Array(arr)), stash_vec))
+        (arr, (Some(PtrArray(arr)), stash_vec))
     }
 
     #[inline]
-    fn to_glib_container_from_slice(t: &'a [T]) -> (*mut glib_sys::GArray, Self::Storage) {
-        let stash_vec: Vec<_> = t.iter().rev().map(ToGlibPtr::to_glib_none).collect();
-        let mut arr: *mut glib_sys::GArray = ptr::null_mut();
+    fn to_glib_container_from_slice(t: &'a [T]) -> (*mut glib_sys::GPtrArray, Self::Storage) {
+        let stash_vec: Vec<_> = t.iter().map(ToGlibPtr::to_glib_none).collect();
+        let arr = unsafe { glib_sys::g_ptr_array_sized_new(t.len() as _) };
         unsafe {
             for stash in &stash_vec {
-                arr = glib_sys::g_array_append_vals(arr, Ptr::to(stash.0), 1);
+                glib_sys::g_ptr_array_add(arr, Ptr::to(stash.0));
             }
         }
         (arr, (None, stash_vec))
     }
 
     #[inline]
-    fn to_glib_full_from_slice(t: &[T]) -> *mut glib_sys::GArray {
-        let mut arr: *mut glib_sys::GArray = ptr::null_mut();
+    fn to_glib_full_from_slice(t: &[T]) -> *mut glib_sys::GPtrArray {
+        let arr = unsafe { glib_sys::g_ptr_array_sized_new(t.len() as _) };
         unsafe {
             for ptr in t.iter().map(ToGlibPtr::to_glib_full) {
-                arr = glib_sys::g_array_append_vals(arr, Ptr::to(ptr), 1);
+                glib_sys::g_ptr_array_add(arr, Ptr::to(ptr));
             }
         }
         arr
+    }
+}
+
+impl<'a, T> ToGlibContainerFromSlice<'a, *const glib_sys::GPtrArray> for T
+where
+    T: GlibPtrDefault + ToGlibPtr<'a, <T as GlibPtrDefault>::GlibType>,
+{
+    type Storage = (
+        Option<PtrArray>,
+        Vec<Stash<'a, <T as GlibPtrDefault>::GlibType, T>>,
+    );
+
+    #[inline]
+    fn to_glib_none_from_slice(t: &'a [T]) -> (*const glib_sys::GPtrArray, Self::Storage) {
+        let (arr, stash) =
+            ToGlibContainerFromSlice::<*mut glib_sys::GPtrArray>::to_glib_none_from_slice(t);
+        (arr as *const glib_sys::GPtrArray, stash)
+    }
+
+    #[inline]
+    fn to_glib_container_from_slice(_t: &'a [T]) -> (*const glib_sys::GPtrArray, Self::Storage) {
+        unimplemented!()
+    }
+
+    #[inline]
+    fn to_glib_full_from_slice(_t: &[T]) -> *const glib_sys::GPtrArray {
+        unimplemented!()
     }
 }
 
@@ -1059,13 +1091,7 @@ impl FromGlib<u32> for char {
 impl FromGlib<i32> for Ordering {
     #[inline]
     fn from_glib(val: i32) -> Ordering {
-        if val < 0 {
-            Ordering::Less
-        } else if val > 0 {
-            Ordering::Greater
-        } else {
-            Ordering::Equal
-        }
+        val.cmp(&0)
     }
 }
 
@@ -1108,24 +1134,87 @@ impl FromGlib<i32> for Option<u64> {
     }
 }
 
-/// Translate from a pointer type without taking ownership, transfer: none.
+/// Translate from a pointer type which is annotated with `transfer none`.
+/// The resulting value is referenced at least once, by the bindings.
+///
+/// This is suitable for floating references, which become strong references.
+/// It is also suitable for acquiring non-gobject values, like `gchar*`.
+///
+/// <a name="safety_points"></a>
+/// # Safety
+///
+/// The implementation of this trait should acquire a reference to the value
+/// in a way appropriate to the type,
+/// e.g. by increasing the reference count or copying.
+/// Values obtained using this trait must be properly released on `drop()`
+/// by the implementing type.
+///
+/// For more information, refer to module level documentation.
 pub trait FromGlibPtrNone<P: Ptr>: Sized {
+    /// # Safety
+    ///
+    /// See trait level [notes on safety](#safety_points)
     unsafe fn from_glib_none(ptr: P) -> Self;
 }
 
-/// Translate from a pointer type taking ownership, transfer: full.
+/// Translate from a pointer type which is annotated with `transfer full`.
+/// This transfers the ownership of the value to the Rust side.
+///
+/// Because ownership can only be transferred if something is already referenced,
+/// this is unsuitable for floating references.
+///
+/// <a name="safety_points"></a>
+/// # Safety
+///
+/// The implementation of this trait should not alter the reference count
+/// or make copies of the underlying value.
+/// Values obtained using this trait must be properly released on `drop()`
+/// by the implementing type.
+///
+/// For more information, refer to module level documentation.
 pub trait FromGlibPtrFull<P: Ptr>: Sized {
+    /// # Safety
+    ///
+    /// See trait level [notes on safety](#safety_points)
     unsafe fn from_glib_full(ptr: P) -> Self;
 }
 
-/// Translate from a pointer type by borrowing. Don't increase the refcount
+/// Translate from a pointer type by borrowing, without affecting the refcount.
+///
+/// The purpose of this trait is to access values inside callbacks
+/// without changing their reference status.
+/// The obtained borrow must not be accessed outside of the scope of the callback,
+/// and called procedures must not store any references to the underlying data.
+/// Safe Rust code must never obtain a mutable Rust reference.
+///
+/// <a name="safety_points"></a>
+/// # Safety
+///
+/// The implementation of this trait as well as the returned type
+/// must satisfy the same constraints together.
+/// They must not take ownership of the underlying value, copy it,
+/// and should not change its rerefence count.
+/// If it does, it must properly release obtained references.
+///
+/// The returned value, when dropped,
+/// must leave the underlying value in the same state
+/// as before from_glib_borrow was called:
+/// - it must not be dropped,
+/// - it must be the same type of reference, e.g. still floating.
+///
+/// For more information, refer to module level documentation.
 pub trait FromGlibPtrBorrow<P: Ptr>: Sized {
-    unsafe fn from_glib_borrow(_ptr: P) -> Self {
+    /// # Safety
+    ///
+    /// See trait level [notes on safety](#safety_points)
+    unsafe fn from_glib_borrow(_ptr: P) -> Borrowed<Self> {
         unimplemented!();
     }
 }
 
 /// Translate from a pointer type, transfer: none.
+///
+/// See [`FromGlibPtrNone`](trait.FromGlibPtrNone.html).
 #[inline]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn from_glib_none<P: Ptr, T: FromGlibPtrNone<P>>(ptr: P) -> T {
@@ -1133,6 +1222,8 @@ pub unsafe fn from_glib_none<P: Ptr, T: FromGlibPtrNone<P>>(ptr: P) -> T {
 }
 
 /// Translate from a pointer type, transfer: full (assume ownership).
+///
+/// See [`FromGlibPtrFull`](trait.FromGlibPtrFull.html).
 #[inline]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn from_glib_full<P: Ptr, T: FromGlibPtrFull<P>>(ptr: P) -> T {
@@ -1140,9 +1231,11 @@ pub unsafe fn from_glib_full<P: Ptr, T: FromGlibPtrFull<P>>(ptr: P) -> T {
 }
 
 /// Translate from a pointer type, borrowing the pointer.
+///
+/// See [`FromGlibPtrBorrow`](trait.FromGlibPtrBorrow.html).
 #[inline]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn from_glib_borrow<P: Ptr, T: FromGlibPtrBorrow<P>>(ptr: P) -> T {
+pub unsafe fn from_glib_borrow<P: Ptr, T: FromGlibPtrBorrow<P>>(ptr: P) -> Borrowed<T> {
     FromGlibPtrBorrow::from_glib_borrow(ptr)
 }
 
@@ -1159,11 +1252,12 @@ impl<P: Ptr, T: FromGlibPtrNone<P>> FromGlibPtrNone<P> for Option<T> {
 
 impl<P: Ptr, T: FromGlibPtrBorrow<P>> FromGlibPtrBorrow<P> for Option<T> {
     #[inline]
-    unsafe fn from_glib_borrow(ptr: P) -> Option<T> {
+    unsafe fn from_glib_borrow(ptr: P) -> Borrowed<Option<T>> {
         if ptr.is_null() {
-            None
+            Borrowed::new(None)
         } else {
-            Some(from_glib_borrow(ptr))
+            let val = T::from_glib_borrow(ptr);
+            Borrowed::new(Some(val.into_inner()))
         }
     }
 }
@@ -1332,6 +1426,7 @@ impl FromGlibPtrFull<*mut c_char> for OsString {
 }
 
 /// Translate from a container.
+#[allow(clippy::missing_safety_doc)]
 pub trait FromGlibContainer<T, P: Ptr>: Sized {
     /// Transfer: none.
     ///
@@ -1350,6 +1445,7 @@ pub trait FromGlibContainer<T, P: Ptr>: Sized {
 }
 
 /// Translate from a container of pointers.
+#[allow(clippy::missing_safety_doc)]
 pub trait FromGlibPtrContainer<P: Ptr, PP: Ptr>: FromGlibContainer<P, PP> + Sized {
     /// Transfer: none.
     unsafe fn from_glib_none(ptr: PP) -> Self;
@@ -1374,6 +1470,7 @@ pub unsafe fn c_ptr_array_len<P: Ptr>(mut ptr: *const P) -> usize {
     len
 }
 
+#[allow(clippy::missing_safety_doc)]
 pub trait FromGlibContainerAsVec<T, P: Ptr>
 where
     Self: Sized,
@@ -1383,6 +1480,7 @@ where
     unsafe fn from_glib_full_num_as_vec(ptr: P, num: usize) -> Vec<Self>;
 }
 
+#[allow(clippy::missing_safety_doc)]
 pub trait FromGlibPtrArrayContainerAsVec<P: Ptr, PP: Ptr>: FromGlibContainerAsVec<P, PP>
 where
     Self: Sized,
@@ -1622,6 +1720,10 @@ where
         }
         let mut res = Vec::with_capacity(num);
         for _ in 0..num {
+            if ptr.is_null() {
+                break;
+            }
+
             let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from((*ptr).data);
             if !item_ptr.is_null() {
                 res.push(from_glib_none(item_ptr));
@@ -1632,10 +1734,8 @@ where
     }
 
     unsafe fn from_glib_container_num_as_vec(ptr: *mut glib_sys::GSList, num: usize) -> Vec<T> {
-        let res = FromGlibContainer::from_glib_none_num(ptr, num);
-        if !ptr.is_null() {
-            glib_sys::g_slist_free(ptr as *mut _);
-        }
+        let res = FromGlibContainerAsVec::from_glib_none_num_as_vec(ptr, num);
+        glib_sys::g_slist_free(ptr);
         res
     }
 
@@ -1646,13 +1746,17 @@ where
         let orig_ptr = ptr;
         let mut res = Vec::with_capacity(num);
         for _ in 0..num {
+            if ptr.is_null() {
+                break;
+            }
+
             let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from((*ptr).data);
             if !item_ptr.is_null() {
                 res.push(from_glib_full(item_ptr));
             }
             ptr = (*ptr).next;
         }
-        glib_sys::g_slist_free(orig_ptr as *mut _);
+        glib_sys::g_slist_free(orig_ptr);
         res
     }
 }
@@ -1663,19 +1767,36 @@ where
         + FromGlibPtrNone<<T as GlibPtrDefault>::GlibType>
         + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
 {
-    unsafe fn from_glib_none_as_vec(ptr: *mut glib_sys::GSList) -> Vec<T> {
-        let num = glib_sys::g_slist_length(ptr) as usize;
-        FromGlibContainer::from_glib_none_num(ptr, num)
+    unsafe fn from_glib_none_as_vec(mut ptr: *mut glib_sys::GSList) -> Vec<T> {
+        let mut res = Vec::new();
+        while !ptr.is_null() {
+            let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from((*ptr).data);
+            if !item_ptr.is_null() {
+                res.push(from_glib_none(item_ptr));
+            }
+            ptr = (*ptr).next;
+        }
+        res
     }
 
     unsafe fn from_glib_container_as_vec(ptr: *mut glib_sys::GSList) -> Vec<T> {
-        let num = glib_sys::g_slist_length(ptr) as usize;
-        FromGlibContainer::from_glib_container_num(ptr, num)
+        let res = FromGlibPtrArrayContainerAsVec::from_glib_none_as_vec(ptr);
+        glib_sys::g_slist_free(ptr);
+        res
     }
 
-    unsafe fn from_glib_full_as_vec(ptr: *mut glib_sys::GSList) -> Vec<T> {
-        let num = glib_sys::g_slist_length(ptr) as usize;
-        FromGlibContainer::from_glib_full_num(ptr, num)
+    unsafe fn from_glib_full_as_vec(mut ptr: *mut glib_sys::GSList) -> Vec<T> {
+        let orig_ptr = ptr;
+        let mut res = Vec::new();
+        while !ptr.is_null() {
+            let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from((*ptr).data);
+            if !item_ptr.is_null() {
+                res.push(from_glib_full(item_ptr));
+            }
+            ptr = (*ptr).next;
+        }
+        glib_sys::g_slist_free(orig_ptr);
+        res
     }
 }
 
@@ -1691,6 +1812,10 @@ where
         }
         let mut res = Vec::with_capacity(num);
         for _ in 0..num {
+            if ptr.is_null() {
+                break;
+            }
+
             let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from((*ptr).data);
             if !item_ptr.is_null() {
                 res.push(from_glib_none(item_ptr));
@@ -1701,10 +1826,8 @@ where
     }
 
     unsafe fn from_glib_container_num_as_vec(ptr: *mut glib_sys::GList, num: usize) -> Vec<T> {
-        let res = FromGlibContainer::from_glib_none_num(ptr, num);
-        if !ptr.is_null() {
-            glib_sys::g_list_free(ptr as *mut _);
-        }
+        let res = FromGlibContainerAsVec::from_glib_none_num_as_vec(ptr, num);
+        glib_sys::g_list_free(ptr);
         res
     }
 
@@ -1715,13 +1838,17 @@ where
         let orig_ptr = ptr;
         let mut res = Vec::with_capacity(num);
         for _ in 0..num {
+            if ptr.is_null() {
+                break;
+            }
+
             let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from((*ptr).data);
             if !item_ptr.is_null() {
                 res.push(from_glib_full(item_ptr));
             }
             ptr = (*ptr).next;
         }
-        glib_sys::g_list_free(orig_ptr as *mut _);
+        glib_sys::g_list_free(orig_ptr);
         res
     }
 }
@@ -1732,19 +1859,36 @@ where
         + FromGlibPtrNone<<T as GlibPtrDefault>::GlibType>
         + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
 {
-    unsafe fn from_glib_none_as_vec(ptr: *mut glib_sys::GList) -> Vec<T> {
-        let num = glib_sys::g_list_length(ptr) as usize;
-        FromGlibContainer::from_glib_none_num(ptr, num)
+    unsafe fn from_glib_none_as_vec(mut ptr: *mut glib_sys::GList) -> Vec<T> {
+        let mut res = Vec::new();
+        while !ptr.is_null() {
+            let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from((*ptr).data);
+            if !item_ptr.is_null() {
+                res.push(from_glib_none(item_ptr));
+            }
+            ptr = (*ptr).next;
+        }
+        res
     }
 
     unsafe fn from_glib_container_as_vec(ptr: *mut glib_sys::GList) -> Vec<T> {
-        let num = glib_sys::g_list_length(ptr) as usize;
-        FromGlibContainer::from_glib_container_num(ptr, num)
+        let res = FromGlibPtrArrayContainerAsVec::from_glib_none_as_vec(ptr);
+        glib_sys::g_list_free(ptr);
+        res
     }
 
-    unsafe fn from_glib_full_as_vec(ptr: *mut glib_sys::GList) -> Vec<T> {
-        let num = glib_sys::g_list_length(ptr) as usize;
-        FromGlibContainer::from_glib_full_num(ptr, num)
+    unsafe fn from_glib_full_as_vec(mut ptr: *mut glib_sys::GList) -> Vec<T> {
+        let orig_ptr = ptr;
+        let mut res = Vec::new();
+        while !ptr.is_null() {
+            let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from((*ptr).data);
+            if !item_ptr.is_null() {
+                res.push(from_glib_full(item_ptr));
+            }
+            ptr = (*ptr).next;
+        }
+        glib_sys::g_list_free(orig_ptr);
+        res
     }
 }
 
@@ -1755,7 +1899,7 @@ where
         + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
 {
     unsafe fn from_glib_none_num_as_vec(ptr: *const glib_sys::GList, num: usize) -> Vec<T> {
-        FromGlibContainer::from_glib_none_num(mut_override(ptr), num)
+        FromGlibContainerAsVec::from_glib_none_num_as_vec(mut_override(ptr), num)
     }
 
     unsafe fn from_glib_container_num_as_vec(_: *const glib_sys::GList, _: usize) -> Vec<T> {
@@ -1777,7 +1921,7 @@ where
         + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
 {
     unsafe fn from_glib_none_as_vec(ptr: *const glib_sys::GList) -> Vec<T> {
-        FromGlibPtrContainer::from_glib_none(mut_override(ptr))
+        FromGlibPtrArrayContainerAsVec::from_glib_none_as_vec(mut_override(ptr))
     }
 
     unsafe fn from_glib_container_as_vec(_: *const glib_sys::GList) -> Vec<T> {
@@ -1798,7 +1942,7 @@ where
         + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
 {
     unsafe fn from_glib_none_num_as_vec(ptr: *const glib_sys::GSList, num: usize) -> Vec<T> {
-        FromGlibContainer::from_glib_none_num(mut_override(ptr), num)
+        FromGlibContainerAsVec::from_glib_none_num_as_vec(mut_override(ptr), num)
     }
 
     unsafe fn from_glib_container_num_as_vec(_: *const glib_sys::GSList, _: usize) -> Vec<T> {
@@ -1820,7 +1964,7 @@ where
         + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
 {
     unsafe fn from_glib_none_as_vec(ptr: *const glib_sys::GSList) -> Vec<T> {
-        FromGlibPtrContainer::from_glib_none(mut_override(ptr))
+        FromGlibPtrArrayContainerAsVec::from_glib_none_as_vec(mut_override(ptr))
     }
 
     unsafe fn from_glib_container_as_vec(_: *const glib_sys::GSList) -> Vec<T> {
@@ -1883,6 +2027,120 @@ impl FromGlibPtrContainer<*const c_char, *mut glib_sys::GHashTable> for HashMap<
     }
 }
 
+impl<T> FromGlibContainerAsVec<<T as GlibPtrDefault>::GlibType, *mut glib_sys::GPtrArray> for T
+where
+    T: GlibPtrDefault
+        + FromGlibPtrNone<<T as GlibPtrDefault>::GlibType>
+        + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
+{
+    unsafe fn from_glib_none_num_as_vec(ptr: *mut glib_sys::GPtrArray, num: usize) -> Vec<T> {
+        if num == 0 || ptr.is_null() {
+            return Vec::new();
+        }
+        let pdata = (*ptr).pdata;
+        assert!((*ptr).len as usize >= num);
+        let mut res = Vec::with_capacity(num);
+        for i in 0..num {
+            let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from(ptr::read(pdata.add(i)));
+            if !item_ptr.is_null() {
+                res.push(from_glib_none(item_ptr));
+            }
+        }
+        res
+    }
+
+    unsafe fn from_glib_container_num_as_vec(ptr: *mut glib_sys::GPtrArray, num: usize) -> Vec<T> {
+        let res = FromGlibContainer::from_glib_none_num(ptr, num);
+        if !ptr.is_null() {
+            glib_sys::g_ptr_array_unref(ptr);
+        }
+        res
+    }
+
+    unsafe fn from_glib_full_num_as_vec(ptr: *mut glib_sys::GPtrArray, num: usize) -> Vec<T> {
+        if num == 0 || ptr.is_null() {
+            return Vec::new();
+        }
+        let pdata = (*ptr).pdata;
+        assert!((*ptr).len as usize >= num);
+        let mut res = Vec::with_capacity(num);
+        for i in 0..num {
+            let item_ptr: <T as GlibPtrDefault>::GlibType = Ptr::from(ptr::read(pdata.add(i)));
+            if !item_ptr.is_null() {
+                res.push(from_glib_none(item_ptr));
+            }
+        }
+        glib_sys::g_ptr_array_unref(ptr);
+        res
+    }
+}
+
+impl<T> FromGlibPtrArrayContainerAsVec<<T as GlibPtrDefault>::GlibType, *mut glib_sys::GPtrArray>
+    for T
+where
+    T: GlibPtrDefault
+        + FromGlibPtrNone<<T as GlibPtrDefault>::GlibType>
+        + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
+{
+    unsafe fn from_glib_none_as_vec(ptr: *mut glib_sys::GPtrArray) -> Vec<T> {
+        let num = (*ptr).len as usize;
+        FromGlibContainer::from_glib_none_num(ptr, num)
+    }
+
+    unsafe fn from_glib_container_as_vec(ptr: *mut glib_sys::GPtrArray) -> Vec<T> {
+        let num = (*ptr).len as usize;
+        FromGlibContainer::from_glib_container_num(ptr, num)
+    }
+
+    unsafe fn from_glib_full_as_vec(ptr: *mut glib_sys::GPtrArray) -> Vec<T> {
+        let num = (*ptr).len as usize;
+        FromGlibContainer::from_glib_full_num(ptr, num)
+    }
+}
+
+impl<T> FromGlibContainerAsVec<<T as GlibPtrDefault>::GlibType, *const glib_sys::GPtrArray> for T
+where
+    T: GlibPtrDefault
+        + FromGlibPtrNone<<T as GlibPtrDefault>::GlibType>
+        + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
+{
+    unsafe fn from_glib_none_num_as_vec(ptr: *const glib_sys::GPtrArray, num: usize) -> Vec<T> {
+        FromGlibContainerAsVec::from_glib_none_num_as_vec(mut_override(ptr), num)
+    }
+
+    unsafe fn from_glib_container_num_as_vec(_: *const glib_sys::GPtrArray, _: usize) -> Vec<T> {
+        // Can't really free a *const
+        unimplemented!()
+    }
+
+    unsafe fn from_glib_full_num_as_vec(_: *const glib_sys::GPtrArray, _: usize) -> Vec<T> {
+        // Can't really free a *const
+        unimplemented!()
+    }
+}
+
+impl<T> FromGlibPtrArrayContainerAsVec<<T as GlibPtrDefault>::GlibType, *const glib_sys::GPtrArray>
+    for T
+where
+    T: GlibPtrDefault
+        + FromGlibPtrNone<<T as GlibPtrDefault>::GlibType>
+        + FromGlibPtrFull<<T as GlibPtrDefault>::GlibType>,
+{
+    unsafe fn from_glib_none_as_vec(ptr: *const glib_sys::GPtrArray) -> Vec<T> {
+        FromGlibPtrArrayContainerAsVec::from_glib_none_as_vec(mut_override(ptr))
+    }
+
+    unsafe fn from_glib_container_as_vec(_: *const glib_sys::GPtrArray) -> Vec<T> {
+        // Can't really free a *const
+        unimplemented!()
+    }
+
+    unsafe fn from_glib_full_as_vec(_: *const glib_sys::GPtrArray) -> Vec<T> {
+        // Can't really free a *const
+        unimplemented!()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate tempfile;
@@ -1930,6 +2188,15 @@ mod tests {
     }
 
     #[test]
+    fn ptr_array() {
+        let strings = &["A", "B", "C"];
+        let (ptr, _stash) =
+            ToGlibContainerFromSlice::<*mut glib_sys::GPtrArray>::to_glib_none_from_slice(strings);
+        let v: Vec<GString> = unsafe { FromGlibPtrArrayContainerAsVec::from_glib_none_as_vec(ptr) };
+        assert_eq!(&v, strings);
+    }
+
+    #[test]
     #[cfg(not(target_os = "macos"))]
     fn test_paths() {
         let tmp_dir = tempdir().unwrap();
@@ -1938,20 +2205,17 @@ mod tests {
         // gives us useful results
         let dir_1 = tmp_dir.path().join("abcd");
         fs::create_dir(&dir_1).unwrap();
-        assert_eq!(::functions::path_get_basename(&dir_1), Some("abcd".into()));
+        assert_eq!(::path_get_basename(&dir_1), Some("abcd".into()));
         assert_eq!(
-            ::functions::path_get_basename(dir_1.canonicalize().unwrap()),
+            ::path_get_basename(dir_1.canonicalize().unwrap()),
             Some("abcd".into())
         );
         assert_eq!(
-            ::functions::path_get_dirname(dir_1.canonicalize().unwrap()),
+            ::path_get_dirname(dir_1.canonicalize().unwrap()),
             Some(tmp_dir.path().into())
         );
-        assert!(::functions::file_test(
-            &dir_1,
-            ::FileTest::EXISTS | ::FileTest::IS_DIR
-        ));
-        assert!(::functions::file_test(
+        assert!(::file_test(&dir_1, ::FileTest::EXISTS | ::FileTest::IS_DIR));
+        assert!(::file_test(
             &dir_1.canonicalize().unwrap(),
             ::FileTest::EXISTS | ::FileTest::IS_DIR
         ));
@@ -1959,20 +2223,17 @@ mod tests {
         // And test with some non-ASCII characters
         let dir_2 = tmp_dir.as_ref().join("øäöü");
         fs::create_dir(&dir_2).unwrap();
-        assert_eq!(::functions::path_get_basename(&dir_2), Some("øäöü".into()));
+        assert_eq!(::path_get_basename(&dir_2), Some("øäöü".into()));
         assert_eq!(
-            ::functions::path_get_basename(dir_2.canonicalize().unwrap()),
+            ::path_get_basename(dir_2.canonicalize().unwrap()),
             Some("øäöü".into())
         );
         assert_eq!(
-            ::functions::path_get_dirname(dir_2.canonicalize().unwrap()),
+            ::path_get_dirname(dir_2.canonicalize().unwrap()),
             Some(tmp_dir.path().into())
         );
-        assert!(::functions::file_test(
-            &dir_2,
-            ::FileTest::EXISTS | ::FileTest::IS_DIR
-        ));
-        assert!(::functions::file_test(
+        assert!(::file_test(&dir_2, ::FileTest::EXISTS | ::FileTest::IS_DIR));
+        assert!(::file_test(
             &dir_2.canonicalize().unwrap(),
             ::FileTest::EXISTS | ::FileTest::IS_DIR
         ));
@@ -1988,20 +2249,17 @@ mod tests {
         // gives us useful results
         let dir_1 = tmp_dir.join("abcd");
         fs::create_dir(&dir_1).unwrap();
-        assert_eq!(::functions::path_get_basename(&dir_1), Some("abcd".into()));
+        assert_eq!(::path_get_basename(&dir_1), Some("abcd".into()));
         assert_eq!(
-            ::functions::path_get_basename(dir_1.canonicalize().unwrap()),
+            ::path_get_basename(dir_1.canonicalize().unwrap()),
             Some("abcd".into())
         );
         assert_eq!(
-            ::functions::path_get_dirname(dir_1.canonicalize().unwrap()),
+            ::path_get_dirname(dir_1.canonicalize().unwrap()),
             Some(tmp_dir)
         );
-        assert!(::functions::file_test(
-            &dir_1,
-            ::FileTest::EXISTS | ::FileTest::IS_DIR
-        ));
-        assert!(::functions::file_test(
+        assert!(::file_test(&dir_1, ::FileTest::EXISTS | ::FileTest::IS_DIR));
+        assert!(::file_test(
             &dir_1.canonicalize().unwrap(),
             ::FileTest::EXISTS | ::FileTest::IS_DIR
         ));

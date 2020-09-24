@@ -12,6 +12,7 @@ use futures_util::stream::StreamExt;
 use std::marker::Unpin;
 use std::pin;
 use std::pin::Pin;
+use std::time::Duration;
 
 use Continue;
 use MainContext;
@@ -108,7 +109,7 @@ impl<T, F> Drop for SourceFuture<T, F> {
 /// Create a `Future` that will resolve after the given number of milliseconds.
 ///
 /// The `Future` must be spawned on an `Executor` backed by a `glib::MainContext`.
-pub fn timeout_future(value: u32) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+pub fn timeout_future(value: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
     timeout_future_with_priority(::PRIORITY_DEFAULT, value)
 }
 
@@ -117,7 +118,7 @@ pub fn timeout_future(value: u32) -> Pin<Box<dyn Future<Output = ()> + Send + 's
 /// The `Future` must be spawned on an `Executor` backed by a `glib::MainContext`.
 pub fn timeout_future_with_priority(
     priority: Priority,
-    value: u32,
+    value: Duration,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
     Box::pin(SourceFuture::new(move |send| {
         let mut send = Some(send);
@@ -295,7 +296,7 @@ impl<T, F> Drop for SourceStream<T, F> {
 /// Create a `Stream` that will provide a value every given number of milliseconds.
 ///
 /// The `Future` must be spawned on an `Executor` backed by a `glib::MainContext`.
-pub fn interval_stream(value: u32) -> Pin<Box<dyn Stream<Item = ()> + Send + 'static>> {
+pub fn interval_stream(value: Duration) -> Pin<Box<dyn Stream<Item = ()> + Send + 'static>> {
     interval_stream_with_priority(::PRIORITY_DEFAULT, value)
 }
 
@@ -304,7 +305,7 @@ pub fn interval_stream(value: u32) -> Pin<Box<dyn Stream<Item = ()> + Send + 'st
 /// The `Future` must be spawned on an `Executor` backed by a `glib::MainContext`.
 pub fn interval_stream_with_priority(
     priority: Priority,
-    value: u32,
+    value: Duration,
 ) -> Pin<Box<dyn Stream<Item = ()> + Send + 'static>> {
     Box::pin(SourceStream::new(move |send| {
         ::timeout_source_new(value, None, priority, move || {
@@ -373,14 +374,13 @@ pub fn unix_signal_stream_with_priority(
 mod tests {
     use super::*;
     use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn test_timeout() {
         let c = MainContext::new();
 
-        let res = c.block_on(timeout_future(20));
-
-        assert_eq!(res, ());
+        c.block_on(timeout_future(Duration::from_millis(20)));
     }
 
     #[test]
@@ -389,7 +389,7 @@ mod tests {
         let l = ::MainLoop::new(Some(&c), false);
 
         let l_clone = l.clone();
-        c.spawn(timeout_future(20).then(move |()| {
+        c.spawn(timeout_future(Duration::from_millis(20)).then(move |()| {
             l_clone.quit();
             futures_util::future::ready(())
         }));
@@ -405,18 +405,16 @@ mod tests {
 
         {
             let count = &mut count;
-            let res = c.block_on(
-                interval_stream(20)
+            c.block_on(
+                interval_stream(Duration::from_millis(20))
                     .take(2)
                     .for_each(|()| {
-                        *count = *count + 1;
+                        *count += 1;
 
                         futures_util::future::ready(())
                     })
                     .map(|_| ()),
             );
-
-            assert_eq!(res, ());
         }
 
         assert_eq!(count, 2);
@@ -426,7 +424,7 @@ mod tests {
     fn test_timeout_and_channel() {
         let c = MainContext::default();
 
-        let res = c.block_on(timeout_future(20).then(|()| {
+        let res = c.block_on(timeout_future(Duration::from_millis(20)).then(|()| {
             let (sender, receiver) = oneshot::channel();
 
             thread::spawn(move || {

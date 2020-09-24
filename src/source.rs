@@ -7,10 +7,10 @@ use glib_sys::{self, gboolean, gpointer};
 use libc::c_int as RawFd;
 use std::cell::RefCell;
 use std::mem::transmute;
+use std::num::NonZeroU32;
 #[cfg(unix)]
 use std::os::unix::io::RawFd;
-use std::process;
-use std::thread;
+use std::time::Duration;
 use translate::{from_glib, from_glib_full, FromGlib, ToGlib, ToGlibPtr};
 #[cfg(any(unix, feature = "dox"))]
 use IOCondition;
@@ -20,7 +20,7 @@ use Source;
 
 /// The id of a source that is returned by `idle_add` and `timeout_add`.
 #[derive(Debug, Eq, PartialEq)]
-pub struct SourceId(u32);
+pub struct SourceId(NonZeroU32);
 
 #[doc(hidden)]
 impl ToGlib for SourceId {
@@ -28,7 +28,7 @@ impl ToGlib for SourceId {
 
     #[inline]
     fn to_glib(&self) -> u32 {
-        self.0
+        self.0.get()
     }
 }
 
@@ -37,7 +37,7 @@ impl FromGlib<u32> for SourceId {
     #[inline]
     fn from_glib(val: u32) -> SourceId {
         assert_ne!(val, 0);
-        SourceId(val)
+        SourceId(unsafe { NonZeroU32::new_unchecked(val) })
     }
 }
 
@@ -83,38 +83,6 @@ impl ToGlib for Continue {
     #[inline]
     fn to_glib(&self) -> gboolean {
         self.0.to_glib()
-    }
-}
-
-/// Unwinding propagation guard. Aborts the process if destroyed while
-/// panicking.
-#[deprecated(note = "Rustc has this functionality built-in since 1.26.0")]
-pub struct CallbackGuard(());
-
-#[allow(deprecated)]
-impl CallbackGuard {
-    pub fn new() -> CallbackGuard {
-        CallbackGuard(())
-    }
-}
-
-#[allow(deprecated)]
-impl Default for CallbackGuard {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[allow(deprecated)]
-impl Drop for CallbackGuard {
-    fn drop(&mut self) {
-        use std::io::stderr;
-        use std::io::Write;
-
-        if thread::panicking() {
-            let _ = stderr().write(b"Uncaught panic, exiting\n");
-            process::abort();
-        }
     }
 }
 
@@ -230,14 +198,14 @@ where
 ///
 /// The default main loop almost always is the main loop of the main thread.
 /// Thus the closure is called on the main thread.
-pub fn timeout_add<F>(interval: u32, func: F) -> SourceId
+pub fn timeout_add<F>(interval: Duration, func: F) -> SourceId
 where
     F: FnMut() -> Continue + Send + 'static,
 {
     unsafe {
         from_glib(glib_sys::g_timeout_add_full(
             glib_sys::G_PRIORITY_DEFAULT,
-            interval,
+            interval.as_millis() as _,
             Some(trampoline::<F>),
             into_raw(func),
             Some(destroy_closure::<F>),
@@ -261,7 +229,7 @@ where
 ///
 /// This function panics if called from a different thread than the one that
 /// owns the main context.
-pub fn timeout_add_local<F>(interval: u32, func: F) -> SourceId
+pub fn timeout_add_local<F>(interval: Duration, func: F) -> SourceId
 where
     F: FnMut() -> Continue + 'static,
 {
@@ -269,7 +237,7 @@ where
         assert!(MainContext::default().is_owner());
         from_glib(glib_sys::g_timeout_add_full(
             glib_sys::G_PRIORITY_DEFAULT,
-            interval,
+            interval.as_millis() as _,
             Some(trampoline::<F>),
             into_raw(func),
             Some(destroy_closure::<F>),
@@ -344,7 +312,7 @@ where
         from_glib(glib_sys::g_child_watch_add_full(
             glib_sys::G_PRIORITY_DEFAULT,
             pid.0,
-            Some(transmute(trampoline_child_watch::<F> as usize)),
+            Some(trampoline_child_watch::<F>),
             into_raw_child_watch(func),
             Some(destroy_closure_child_watch::<F>),
         ))
@@ -370,7 +338,7 @@ where
         from_glib(glib_sys::g_child_watch_add_full(
             glib_sys::G_PRIORITY_DEFAULT,
             pid.0,
-            Some(transmute(trampoline_child_watch::<F> as usize)),
+            Some(trampoline_child_watch::<F>),
             into_raw_child_watch(func),
             Some(destroy_closure_child_watch::<F>),
         ))
@@ -448,7 +416,7 @@ where
             glib_sys::G_PRIORITY_DEFAULT,
             fd,
             condition.to_glib(),
-            Some(transmute(trampoline_unix_fd::<F> as usize)),
+            Some(trampoline_unix_fd::<F>),
             into_raw_unix_fd(func),
             Some(destroy_closure_unix_fd::<F>),
         ))
@@ -480,7 +448,7 @@ where
             glib_sys::G_PRIORITY_DEFAULT,
             fd,
             condition.to_glib(),
-            Some(transmute(trampoline_unix_fd::<F> as usize)),
+            Some(trampoline_unix_fd::<F>),
             into_raw_unix_fd(func),
             Some(destroy_closure_unix_fd::<F>),
         ))
@@ -569,7 +537,7 @@ where
 /// be delayed by other events. Prefer `timeout_add_seconds` when millisecond
 /// precision is not necessary.
 pub fn timeout_source_new<F>(
-    interval: u32,
+    interval: Duration,
     name: Option<&str>,
     priority: Priority,
     func: F,
@@ -578,7 +546,7 @@ where
     F: FnMut() -> Continue + Send + 'static,
 {
     unsafe {
-        let source = glib_sys::g_timeout_source_new(interval);
+        let source = glib_sys::g_timeout_source_new(interval.as_millis() as _);
         glib_sys::g_source_set_callback(
             source,
             Some(trampoline::<F>),
@@ -645,7 +613,10 @@ where
         let source = glib_sys::g_child_watch_source_new(pid.0);
         glib_sys::g_source_set_callback(
             source,
-            Some(transmute(trampoline_child_watch::<F> as usize)),
+            Some(transmute::<
+                _,
+                unsafe extern "C" fn(glib_sys::gpointer) -> glib_sys::gboolean,
+            >(trampoline_child_watch::<F> as *const ())),
             into_raw_child_watch(func),
             Some(destroy_closure_child_watch::<F>),
         );
@@ -712,7 +683,10 @@ where
         let source = glib_sys::g_unix_fd_source_new(fd, condition.to_glib());
         glib_sys::g_source_set_callback(
             source,
-            Some(transmute(trampoline_unix_fd::<F> as usize)),
+            Some(transmute::<
+                _,
+                unsafe extern "C" fn(glib_sys::gpointer) -> glib_sys::gboolean,
+            >(trampoline_unix_fd::<F> as *const ())),
             into_raw_unix_fd(func),
             Some(destroy_closure_unix_fd::<F>),
         );
