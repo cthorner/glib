@@ -66,19 +66,19 @@ impl KeyFile {
 
     pub fn get_double_list(&self, group_name: &str, key: &str) -> Result<Vec<f64>, Error> {
         unsafe {
-            let mut length = mem::MaybeUninit::uninit();
+            let mut length = mem::uninitialized();
             let mut error = ptr::null_mut();
             let ret = glib_sys::g_key_file_get_double_list(
                 self.to_glib_none().0,
                 group_name.to_glib_none().0,
                 key.to_glib_none().0,
-                length.as_mut_ptr(),
+                &mut length,
                 &mut error,
             );
             if error.is_null() {
                 Ok(FromGlibContainer::from_glib_container_num(
                     ret,
-                    length.assume_init() as usize,
+                    length as usize,
                 ))
             } else {
                 Err(from_glib_full(error))
@@ -88,12 +88,11 @@ impl KeyFile {
 
     pub fn get_groups(&self) -> (Vec<GString>, usize) {
         unsafe {
-            let mut length = mem::MaybeUninit::uninit();
+            let mut length = mem::uninitialized();
             let ret = FromGlibPtrContainer::from_glib_full(glib_sys::g_key_file_get_groups(
                 self.to_glib_none().0,
-                length.as_mut_ptr(),
+                &mut length,
             ));
-            let length = length.assume_init();
             (ret, length)
         }
     }
@@ -134,19 +133,19 @@ impl KeyFile {
 
     pub fn get_integer_list(&self, group_name: &str, key: &str) -> Result<Vec<i32>, Error> {
         unsafe {
-            let mut length = mem::MaybeUninit::uninit();
+            let mut length = mem::uninitialized();
             let mut error = ptr::null_mut();
             let ret = glib_sys::g_key_file_get_integer_list(
                 self.to_glib_none().0,
                 group_name.to_glib_none().0,
                 key.to_glib_none().0,
-                length.as_mut_ptr(),
+                &mut length,
                 &mut error,
             );
             if error.is_null() {
                 Ok(FromGlibContainer::from_glib_container_num(
                     ret,
-                    length.assume_init() as usize,
+                    length as usize,
                 ))
             } else {
                 Err(from_glib_full(error))
@@ -156,15 +155,14 @@ impl KeyFile {
 
     pub fn get_keys(&self, group_name: &str) -> Result<(Vec<GString>, usize), Error> {
         unsafe {
-            let mut length = mem::MaybeUninit::uninit();
+            let mut length = mem::uninitialized();
             let mut error = ptr::null_mut();
             let ret = glib_sys::g_key_file_get_keys(
                 self.to_glib_none().0,
                 group_name.to_glib_none().0,
-                length.as_mut_ptr(),
+                &mut length,
                 &mut error,
             );
-            let length = length.assume_init();
             if error.is_null() {
                 Ok((FromGlibPtrContainer::from_glib_full(ret), length))
             } else {

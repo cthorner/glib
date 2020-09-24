@@ -53,15 +53,19 @@ mod constants;
 pub use self::constants::CSET_a_2_z;
 pub use self::constants::CSET_A_2_Z;
 pub use self::constants::CSET_DIGITS;
+pub use self::constants::KEY_FILE_DESKTOP_ACTION_GROUP_PREFIX;
 pub use self::constants::KEY_FILE_DESKTOP_GROUP;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_ACTIONS;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_CATEGORIES;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_COMMENT;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_DBUS_ACTIVATABLE;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_EXEC;
+pub use self::constants::KEY_FILE_DESKTOP_KEY_FULLNAME;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_GENERIC_NAME;
+pub use self::constants::KEY_FILE_DESKTOP_KEY_GETTEXT_DOMAIN;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_HIDDEN;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_ICON;
+pub use self::constants::KEY_FILE_DESKTOP_KEY_KEYWORDS;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_MIME_TYPE;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_NAME;
 pub use self::constants::KEY_FILE_DESKTOP_KEY_NOT_SHOW_IN;
@@ -80,8 +84,6 @@ pub use self::constants::KEY_FILE_DESKTOP_TYPE_DIRECTORY;
 pub use self::constants::KEY_FILE_DESKTOP_TYPE_LINK;
 pub use self::constants::OPTION_REMAINING;
 pub use self::constants::STR_DELIMITERS;
-#[cfg(any(feature = "v2_60", feature = "dox"))]
-pub use self::constants::TEST_OPTION_ISOLATE_DIRS;
 pub use self::constants::URI_RESERVED_CHARS_GENERIC_DELIMITERS;
 pub use self::constants::URI_RESERVED_CHARS_SUBCOMPONENT_DELIMITERS;
 

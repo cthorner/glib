@@ -46,7 +46,7 @@ impl DateTime {
     }
 
     #[cfg(any(feature = "v2_56", feature = "dox"))]
-    pub fn from_iso8601(text: &str, default_tz: Option<&TimeZone>) -> Option<DateTime> {
+    pub fn new_from_iso8601(text: &str, default_tz: Option<&TimeZone>) -> Option<DateTime> {
         unsafe {
             from_glib_full(glib_sys::g_date_time_new_from_iso8601(
                 text.to_glib_none().0,
@@ -55,21 +55,19 @@ impl DateTime {
         }
     }
 
-    //#[cfg_attr(feature = "v2_62", deprecated)]
-    //pub fn from_timeval_local(tv: /*Ignored*/&TimeVal) -> DateTime {
+    //pub fn new_from_timeval_local(tv: /*Ignored*/&TimeVal) -> DateTime {
     //    unsafe { TODO: call glib_sys:g_date_time_new_from_timeval_local() }
     //}
 
-    //#[cfg_attr(feature = "v2_62", deprecated)]
-    //pub fn from_timeval_utc(tv: /*Ignored*/&TimeVal) -> DateTime {
+    //pub fn new_from_timeval_utc(tv: /*Ignored*/&TimeVal) -> DateTime {
     //    unsafe { TODO: call glib_sys:g_date_time_new_from_timeval_utc() }
     //}
 
-    pub fn from_unix_local(t: i64) -> DateTime {
+    pub fn new_from_unix_local(t: i64) -> DateTime {
         unsafe { from_glib_full(glib_sys::g_date_time_new_from_unix_local(t)) }
     }
 
-    pub fn from_unix_utc(t: i64) -> DateTime {
+    pub fn new_from_unix_utc(t: i64) -> DateTime {
         unsafe { from_glib_full(glib_sys::g_date_time_new_from_unix_utc(t)) }
     }
 
@@ -212,11 +210,6 @@ impl DateTime {
         }
     }
 
-    #[cfg(any(feature = "v2_62", feature = "dox"))]
-    pub fn format_iso8601(&self) -> Option<GString> {
-        unsafe { from_glib_full(glib_sys::g_date_time_format_iso8601(self.to_glib_none().0)) }
-    }
-
     pub fn get_day_of_month(&self) -> i32 {
         unsafe { glib_sys::g_date_time_get_day_of_month(self.to_glib_none().0) }
     }
@@ -284,18 +277,10 @@ impl DateTime {
 
     pub fn get_ymd(&self) -> (i32, i32, i32) {
         unsafe {
-            let mut year = mem::MaybeUninit::uninit();
-            let mut month = mem::MaybeUninit::uninit();
-            let mut day = mem::MaybeUninit::uninit();
-            glib_sys::g_date_time_get_ymd(
-                self.to_glib_none().0,
-                year.as_mut_ptr(),
-                month.as_mut_ptr(),
-                day.as_mut_ptr(),
-            );
-            let year = year.assume_init();
-            let month = month.assume_init();
-            let day = day.assume_init();
+            let mut year = mem::uninitialized();
+            let mut month = mem::uninitialized();
+            let mut day = mem::uninitialized();
+            glib_sys::g_date_time_get_ymd(self.to_glib_none().0, &mut year, &mut month, &mut day);
             (year, month, day)
         }
     }
@@ -312,7 +297,6 @@ impl DateTime {
         unsafe { from_glib_full(glib_sys::g_date_time_to_local(self.to_glib_none().0)) }
     }
 
-    //#[cfg_attr(feature = "v2_62", deprecated)]
     //pub fn to_timeval(&self, tv: /*Ignored*/&mut TimeVal) -> bool {
     //    unsafe { TODO: call glib_sys:g_date_time_to_timeval() }
     //}

@@ -9,7 +9,6 @@ use translate::*;
 use Quark;
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy)]
-#[non_exhaustive]
 pub enum ChecksumType {
     Md5,
     Sha1,
@@ -72,7 +71,6 @@ impl FromGlib<glib_sys::GChecksumType> for ChecksumType {
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy)]
-#[non_exhaustive]
 pub enum DateMonth {
     BadMonth,
     January,
@@ -163,7 +161,6 @@ impl FromGlib<glib_sys::GDateMonth> for DateMonth {
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy)]
-#[non_exhaustive]
 pub enum DateWeekday {
     BadWeekday,
     Monday,
@@ -234,7 +231,6 @@ impl FromGlib<glib_sys::GDateWeekday> for DateWeekday {
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy)]
-#[non_exhaustive]
 pub enum KeyFileError {
     UnknownEncoding,
     Parse,
@@ -319,7 +315,6 @@ impl ErrorDomain for KeyFileError {
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy)]
-#[non_exhaustive]
 pub enum OptionArg {
     None,
     String,
@@ -394,7 +389,6 @@ impl FromGlib<glib_sys::GOptionArg> for OptionArg {
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy)]
-#[non_exhaustive]
 pub enum SeekType {
     Cur,
     Set,
@@ -445,7 +439,6 @@ impl FromGlib<glib_sys::GSeekType> for SeekType {
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy)]
-#[non_exhaustive]
 pub enum TimeType {
     Standard,
     Daylight,
