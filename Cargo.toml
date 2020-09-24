@@ -30,8 +30,10 @@ futures-task = "0.3"
 futures-executor = "0.3"
 futures-util = "0.3"
 futures-channel = "0.3"
-glib-sys = "0.9.1"
-gobject-sys = "0.9.1"
+# glib-sys = "0.9.1"
+# gobject-sys = "0.9.1"
+gobject-sys = { git = "https://github.com/cthorner/sys", branch = "crate-custom", version = "0.9.1" }
+glib-sys = { git = "https://github.com/cthorner/sys", branch = "crate-custom", version = "0.9.1" }
 
 [dev-dependencies]
 tempfile = "3"
